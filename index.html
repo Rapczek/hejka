@@ -102,17 +102,18 @@ button:hover{background:var(--fg);color:var(--bg)}
 
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js";
-import { getFirestore, doc, getDoc, setDoc, deleteDoc, runTransaction, serverTimestamp }
+import { initializeFirestore, doc, getDoc, getDocFromServer, setDoc, updateDoc, deleteDoc, increment, serverTimestamp }
   from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
 
 /* Paste your own config from Firebase console > Project settings > Your apps > Web */
 const firebaseConfig = {
-  apiKey: "AIzaSyBk7hY2ETD1ZYtqIHBmio18K8Cr9iu_FLI",
-  authDomain: "hejka-51eb7.firebaseapp.com",
-  projectId: "hejka-51eb7",
-  appId: "1:1064768867914:web:90b3e545d19386baa5a0b3"
+  apiKey: "PASTE_HERE",
+  authDomain: "PASTE_HERE",
+  projectId: "PASTE_HERE",
+  appId: "PASTE_HERE"
 };
-const db = getFirestore(initializeApp(firebaseConfig));
+/* Auto-detect long polling: fixes very slow connections behind some antivirus, VPN, proxy or ad blocker. */
+const db = initializeFirestore(initializeApp(firebaseConfig), { experimentalAutoDetectLongPolling: true });
 
 /* Files are split into pieces of 700,000 characters (base64), one Firestore document each. */
 const CHUNK = 700000;
@@ -131,22 +132,27 @@ async function put(item, pieces, onProgress){
     catch (e) { lastErr = e; if (e.code !== "permission-denied") throw e; }
   }
   if (!c) throw lastErr;
-  for (let i = 0; i < pieces.length; i++) {
-    onProgress && onProgress(i + 1, pieces.length);
-    await setDoc(chunkRef(c, i), { d: pieces[i] });
+  let done = 0;
+  for (let i = 0; i < pieces.length; i += 4) {
+    await Promise.all(pieces.slice(i, i + 4).map((p, j) =>
+      setDoc(chunkRef(c, i + j), { d: p }).then(() => { onProgress && onProgress(++done, pieces.length); })));
   }
   return c;
 }
-function take(code){
+const withTimeout = (p, ms) => Promise.race([p,
+  new Promise((_, no) => setTimeout(() => no(new Error("timeout, check your connection")), ms))]);
+
+/* One read, then the open counter is lowered in the background, so the result shows up immediately. */
+async function take(code){
   const ref = doc(db, "shares", code);
-  return runTransaction(db, async tx => {
-    const s = await tx.get(ref);
-    if (!s.exists()) return null;
-    const d = s.data();
-    if (d.opens <= 1) tx.delete(ref); else tx.update(ref, { opens: d.opens - 1 });
-    return d;
-  });
+  const s = await withTimeout(getDocFromServer(ref), 20000);
+  if (!s.exists()) return null;
+  const d = s.data();
+  (d.opens <= 1 ? deleteDoc(ref) : updateDoc(ref, { opens: increment(-1) })).catch(() => {});
+  return d;
 }
+/* Open the connection as soon as the page loads, so the first real request is not the slow one. */
+getDocFromServer(doc(db, "shares", "warmup")).catch(() => {});
 const readFile = f => new Promise((ok, no) => {
   const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = no; r.readAsDataURL(f);
 });
@@ -211,6 +217,9 @@ $("share").addEventListener("click", async () => {
     msg.replaceChildren("Share code (" + opens + (opens === 1 ? " open" : " opens") + "):");
     const d = document.createElement("div"); d.className = "code"; d.textContent = c;
     msg.append(d);
+    const cp = document.createElement("button"); cp.type = "button"; cp.textContent = "Copy";
+    cp.onclick = () => navigator.clipboard.writeText(c).then(() => { cp.textContent = "Copied"; });
+    msg.append(cp);
   } catch (e) {
     msg.textContent = "Could not save: " + (e.code || e.message) + (e.code === "permission-denied" ? " (check Firestore rules)" : "");
   } finally { btn.disabled = false; }
