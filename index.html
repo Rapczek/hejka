@@ -102,22 +102,30 @@ button:hover{background:var(--fg);color:var(--bg)}
 
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js";
-import { initializeFirestore, doc, getDoc, getDocFromServer, setDoc, updateDoc, deleteDoc, increment, serverTimestamp }
+import { initializeFirestore, doc, getDoc, getDocFromServer, setDoc, updateDoc, deleteDoc, increment, serverTimestamp, Bytes, Timestamp }
   from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
 
 /* Paste your own config from Firebase console > Project settings > Your apps > Web */
 const firebaseConfig = {
-  apiKey: "PASTE_HERE",
-  authDomain: "PASTE_HERE",
-  projectId: "PASTE_HERE",
-  appId: "PASTE_HERE"
+  apiKey: "AIzaSyBk7hY2ETD1ZYtqIHBmio18K8Cr9iu_FLI",
+  authDomain: "hejka-51eb7.firebaseapp.com",
+  projectId: "hejka-51eb7",
+  storageBucket: "hejka-51eb7.firebasestorage.app",
+  messagingSenderId: "1064768867914",
+  appId: "1:1064768867914:web:90b3e545d19386baa5a0b3",
+  measurementId: "G-71GXJSDP4Z"
 };
 /* Auto-detect long polling: fixes very slow connections behind some antivirus, VPN, proxy or ad blocker. */
 const db = initializeFirestore(initializeApp(firebaseConfig), { experimentalAutoDetectLongPolling: true });
 
-/* Files are split into pieces of 700,000 characters (base64), one Firestore document each. */
-const CHUNK = 700000;
-const MAX_FILE = 9 * 1024 * 1024;
+/* Files are gzip-compressed when that helps, then split into raw pieces of 900,000 bytes,
+   one Firestore document each (document limit is 1 MiB). 60 pieces = about 54 MB stored. */
+const CHUNK = 900000;
+const MAX_CHUNKS = 60;
+const MAX_READ = 150 * 1024 * 1024;   /* refuse to even load files above this */
+const KEEP_DAYS = 7;                  /* expireAt field, usable with a Firestore TTL policy */
+const NO_GZIP = /\.(zip|rar|7z|gz|jpe?g|png|gif|webp|mp[34]|mkv|avi|mov|pdf|docx|xlsx|pptx)$/i;
+const expire = () => Timestamp.fromMillis(Date.now() + KEEP_DAYS * 864e5);
 
 const ALPHA = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const $ = id => document.getElementById(id);
@@ -128,14 +136,14 @@ async function put(item, pieces, onProgress){
   let c = null, lastErr = null;
   for (let i = 0; i < 3 && !c; i++) {
     const t = newCode();
-    try { await setDoc(doc(db, "shares", t), { ...item, createdAt: serverTimestamp() }); c = t; }
+    try { await setDoc(doc(db, "shares", t), { ...item, createdAt: serverTimestamp(), expireAt: expire() }); c = t; }
     catch (e) { lastErr = e; if (e.code !== "permission-denied") throw e; }
   }
   if (!c) throw lastErr;
   let done = 0;
-  for (let i = 0; i < pieces.length; i += 4) {
-    await Promise.all(pieces.slice(i, i + 4).map((p, j) =>
-      setDoc(chunkRef(c, i + j), { d: p }).then(() => { onProgress && onProgress(++done, pieces.length); })));
+  for (let i = 0; i < pieces.length; i += 6) {
+    await Promise.all(pieces.slice(i, i + 6).map((p, j) =>
+      setDoc(chunkRef(c, i + j), { d: p, expireAt: expire() }).then(() => { onProgress && onProgress(++done, pieces.length); })));
   }
   return c;
 }
@@ -153,9 +161,7 @@ async function take(code){
 }
 /* Open the connection as soon as the page loads, so the first real request is not the slow one. */
 getDocFromServer(doc(db, "shares", "warmup")).catch(() => {});
-const readFile = f => new Promise((ok, no) => {
-  const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = no; r.readAsDataURL(f);
-});
+const gzip = bytes => new Response(new Blob([bytes]).stream().pipeThrough(new CompressionStream("gzip"))).arrayBuffer();
 
 /* Keep only b, i, u and line breaks from pasted or typed HTML. */
 function clean(node, out){
@@ -203,10 +209,20 @@ $("share").addEventListener("click", async () => {
     if (isFile) {
       const f = $("f").files[0];
       if (!f) { msg.textContent = "Choose a file first."; return; }
-      if (f.size > MAX_FILE) { msg.textContent = "File too large (limit 9 MB)."; return; }
-      const data = await readFile(f);
-      for (let i = 0; i < data.length; i += CHUNK) pieces.push(data.slice(i, i + CHUNK));
-      item = { type: "file", name: f.name, size: f.size, chunks: pieces.length, opens };
+      if (f.size > MAX_READ) { msg.textContent = "File too large."; return; }
+      btn.disabled = true;
+      msg.textContent = "Preparing file...";
+      let bytes = new Uint8Array(await f.arrayBuffer()), gz = false;
+      if ("CompressionStream" in window && !NO_GZIP.test(f.name)) {
+        const c = new Uint8Array(await gzip(bytes));
+        if (c.length < bytes.length * 0.95) { bytes = c; gz = true; }
+      }
+      if (Math.ceil(bytes.length / CHUNK) > MAX_CHUNKS) {
+        msg.textContent = "File too large (limit is about 54 MB after compression)."; btn.disabled = false; return;
+      }
+      for (let i = 0; i < bytes.length; i += CHUNK) pieces.push(Bytes.fromUint8Array(bytes.slice(i, i + CHUNK)));
+      if (!pieces.length) pieces.push(Bytes.fromUint8Array(new Uint8Array(0)));
+      item = { type: "file", name: f.name, size: f.size, stored: bytes.length, gz, chunks: pieces.length, opens };
     } else {
       if (!$("ed").textContent.trim()) { msg.textContent = "Enter some text first."; return; }
       item = { type: "text", html: clean($("ed"), document.createElement("div")).innerHTML, opens };
@@ -238,10 +254,19 @@ async function fetchCode(){
     if (it.type === "text") {
       body.append(...new DOMParser().parseFromString("<body>" + it.html + "</body>", "text/html").body.childNodes);
     } else {
-      msg.textContent = "Downloading...";
-      const snaps = await Promise.all(Array.from({ length: it.chunks }, (_, i) => getDoc(chunkRef(code, i))));
+      const snaps = [];
+      for (let i = 0; i < it.chunks; i += 6) {
+        msg.textContent = "Downloading... " + i + "/" + it.chunks;
+        snaps.push(...await Promise.all(Array.from({ length: Math.min(6, it.chunks - i) }, (_, j) => getDoc(chunkRef(code, i + j)))));
+      }
       if (snaps.some(s => !s.exists())) throw new Error("file is incomplete");
-      const blob = await (await fetch(snaps.map(s => s.data().d).join(""))).blob();
+      msg.textContent = "Preparing file...";
+      const parts = snaps.map(s => s.data().d.toUint8Array());
+      const all = new Uint8Array(parts.reduce((n, x) => n + x.length, 0));
+      let o = 0; parts.forEach(x => { all.set(x, o); o += x.length; });
+      const blob = it.gz
+        ? await new Response(new Blob([all]).stream().pipeThrough(new DecompressionStream("gzip"))).blob()
+        : new Blob([all]);
       body.textContent = it.name + " (" + Math.ceil(it.size / 1024) + " KB)";
       link.href = URL.createObjectURL(blob); link.download = it.name; link.hidden = false;
       if (it.opens <= 1) snaps.forEach((_, i) => deleteDoc(chunkRef(code, i)).catch(() => {}));

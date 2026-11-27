@@ -14,5 +14,5 @@ Strona do udostępniania tekstu i plików po kodzie (Firebase Firestore, hosting
 5. Wrzuć na GitHub Pages (Settings -> Pages -> Deploy from a branch -> main / root).
 
 ## Limity
-- plik do 9 MB, tekst do ok. 100 KB, do 100 otwarć
+- plik do ok. 54 MB po kompresji (gzip, gdy się opłaca), tekst do ok. 100 KB, do 100 otwarć
 - licznik otwarć nie jest w pełni wiążący (patrz uwagi w rozmowie): kod zna każdy, kto go ma

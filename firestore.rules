@@ -6,7 +6,7 @@ service cloud.firestore {
       allow get: if true;
       allow list: if false;
 
-      allow create: if request.resource.data.keys().hasOnly(['type','html','name','size','chunks','opens','createdAt'])
+      allow create: if request.resource.data.keys().hasOnly(['type','html','name','size','stored','gz','chunks','opens','createdAt','expireAt'])
         && request.resource.data.type in ['text','file']
         && request.resource.data.opens is int
         && request.resource.data.opens >= 1
@@ -15,7 +15,7 @@ service cloud.firestore {
         && (!('chunks' in request.resource.data)
             || (request.resource.data.chunks is int
                 && request.resource.data.chunks >= 1
-                && request.resource.data.chunks <= 20));
+                && request.resource.data.chunks <= 60));
 
       // only allowed change: opens goes down by exactly one
       allow update: if request.resource.data.diff(resource.data).affectedKeys().hasOnly(['opens'])
@@ -30,10 +30,10 @@ service cloud.firestore {
         allow get: if true;
         allow list: if false;
         allow create: if exists(/databases/$(database)/documents/shares/$(code))
-          && i.matches('^[0-9]+$') && int(i) < 20
-          && request.resource.data.keys().hasOnly(['d'])
-          && request.resource.data.d is string
-          && request.resource.data.d.size() <= 700000;
+          && i.matches('^[0-9]+$') && int(i) < 60
+          && request.resource.data.keys().hasOnly(['d','expireAt'])
+          && request.resource.data.d is bytes
+          && request.resource.data.d.size() <= 900000;
         allow update: if false;
         // pieces can be removed once the share itself is gone
         allow delete: if !exists(/databases/$(database)/documents/shares/$(code));
