@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>LS</title>
+<style>
+:root{
+  --bg:#f6f5f2; --fg:#222; --muted:#6b6b66; --line:#cfcdc6; --field:#fff; --accent:#1d4e89;
+  box-sizing:border-box;
+  padding-top:env(safe-area-inset-top,0px); padding-bottom:env(safe-area-inset-bottom,0px);
+  color-scheme:light;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){--bg:#1c1c1b;--fg:#e4e2dc;--muted:#97958d;--line:#3d3d3a;--field:#242423;--accent:#8db4e2;color-scheme:dark}
+}
+:root[data-theme="dark"]{--bg:#1c1c1b;--fg:#e4e2dc;--muted:#97958d;--line:#3d3d3a;--field:#242423;--accent:#8db4e2;color-scheme:dark}
+*{box-sizing:border-box}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.5 system-ui,-apple-system,"Segoe UI",Arial,sans-serif}
+.wrap{max-width:34rem;margin:0 auto;padding:1.25rem 1rem 3rem}
+header{display:flex;justify-content:space-between;align-items:baseline;border-bottom:1px solid var(--line);padding-bottom:.6rem;margin-bottom:1.75rem}
+header strong{font-weight:600;letter-spacing:.04em}
+nav a{margin-left:1.1rem;color:var(--fg);text-decoration:none;padding-bottom:2px}
+nav a[aria-current="page"]{border-bottom:1px solid var(--fg)}
+h1{font-size:1.05rem;font-weight:600;margin:0 0 1rem}
+label,legend{display:block;font-size:.9rem;color:var(--muted);margin:0 0 .3rem}
+fieldset{border:0;padding:0;margin:0 0 1.1rem}
+.row{display:flex;gap:1.25rem;margin-bottom:1.1rem}
+.row label{display:flex;align-items:center;gap:.4rem;color:var(--fg);margin:0}
+input[type=text],input[type=number],textarea,.editor{
+  width:100%;font:inherit;color:var(--fg);background:var(--field);
+  border:1px solid var(--line);border-radius:2px;padding:.5rem .6rem}
+input:focus,textarea:focus,.editor:focus,button:focus-visible,a:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.editor{min-height:9rem;overflow:auto;white-space:pre-wrap}
+.tools{display:flex;gap:.25rem;margin-bottom:.3rem}
+.tools button{width:2rem;padding:.1rem 0;font:inherit}
+button{font:inherit;color:var(--fg);background:transparent;border:1px solid var(--fg);border-radius:2px;padding:.4rem 1rem;cursor:pointer}
+button:hover{background:var(--fg);color:var(--bg)}
+.num{width:6rem}
+.msg{margin-top:1.1rem;color:var(--muted);font-size:.95rem}
+.code{font:1.5rem/1.2 ui-monospace,Menlo,Consolas,monospace;letter-spacing:.12em;margin:.4rem 0;color:var(--fg)}
+.result{margin-top:1.25rem;border-top:1px solid var(--line);padding-top:1rem}
+.result .body{white-space:pre-wrap;overflow-wrap:anywhere}
+[hidden]{display:none!important}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <strong>LS</strong>
+  <nav>
+    <a href="#upload" id="n-upload">Upload</a>
+    <a href="#download" id="n-download">Download</a>
+  </nav>
+</header>
+
+<main id="v-upload">
+  <h1>Share</h1>
+  <div class="row" role="radiogroup" aria-label="Type">
+    <label><input type="radio" name="kind" value="text" checked> Text</label>
+    <label><input type="radio" name="kind" value="file"> File</label>
+  </div>
+
+  <div id="p-text">
+    <label for="ed">Text to share</label>
+    <div class="tools">
+      <button type="button" data-cmd="bold" aria-label="Bold"><b>B</b></button>
+      <button type="button" data-cmd="italic" aria-label="Italic"><i>I</i></button>
+      <button type="button" data-cmd="underline" aria-label="Underline"><u>U</u></button>
+    </div>
+    <div id="ed" class="editor" contenteditable="true" role="textbox" aria-multiline="true"></div>
+  </div>
+
+  <div id="p-file" hidden>
+    <label for="f">File</label>
+    <input id="f" type="file">
+  </div>
+
+  <div style="margin:1.1rem 0">
+    <label for="opens">Number of opens</label>
+    <input id="opens" class="num" type="number" min="1" max="100" value="1">
+  </div>
+  <button id="share" type="button">Share</button>
+  <p class="msg" id="u-msg">Choose text or a file to create a share code.</p>
+</main>
+
+<main id="v-download" hidden>
+  <h1>Retrieve shared content</h1>
+  <label for="code">Enter code</label>
+  <div style="display:flex;gap:.5rem">
+    <input id="code" type="text" autocomplete="off" autocapitalize="characters" spellcheck="false" maxlength="12">
+    <button id="ok" type="button">OK</button>
+  </div>
+  <p class="msg" id="d-msg">Enter a code to retrieve shared text or a file.</p>
+  <div class="result" id="result" hidden>
+    <div class="body" id="r-body"></div>
+    <a id="r-file" hidden>Save file</a>
+  </div>
+</main>
+</div>
+
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js";
+import { getFirestore, doc, getDoc, setDoc, deleteDoc, runTransaction, serverTimestamp }
+  from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
+
+/* Paste your own config from Firebase console > Project settings > Your apps > Web */
+const firebaseConfig = {
+  apiKey: "AIzaSyBk7hY2ETD1ZYtqIHBmio18K8Cr9iu_FLI",
+  authDomain: "hejka-51eb7.firebaseapp.com",
+  projectId: "hejka-51eb7",
+  appId: "1:1064768867914:web:90b3e545d19386baa5a0b3"
+};
+const db = getFirestore(initializeApp(firebaseConfig));
+
+/* Files are split into pieces of 700,000 characters (base64), one Firestore document each. */
+const CHUNK = 700000;
+const MAX_FILE = 9 * 1024 * 1024;
+
+const ALPHA = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+const $ = id => document.getElementById(id);
+const newCode = () => Array.from(crypto.getRandomValues(new Uint8Array(8)), b => ALPHA[b % ALPHA.length]).join("");
+const chunkRef = (code, i) => doc(db, "shares", code, "chunks", String(i));
+
+async function put(item, pieces, onProgress){
+  let c = null, lastErr = null;
+  for (let i = 0; i < 3 && !c; i++) {
+    const t = newCode();
+    try { await setDoc(doc(db, "shares", t), { ...item, createdAt: serverTimestamp() }); c = t; }
+    catch (e) { lastErr = e; if (e.code !== "permission-denied") throw e; }
+  }
+  if (!c) throw lastErr;
+  for (let i = 0; i < pieces.length; i++) {
+    onProgress && onProgress(i + 1, pieces.length);
+    await setDoc(chunkRef(c, i), { d: pieces[i] });
+  }
+  return c;
+}
+function take(code){
+  const ref = doc(db, "shares", code);
+  return runTransaction(db, async tx => {
+    const s = await tx.get(ref);
+    if (!s.exists()) return null;
+    const d = s.data();
+    if (d.opens <= 1) tx.delete(ref); else tx.update(ref, { opens: d.opens - 1 });
+    return d;
+  });
+}
+const readFile = f => new Promise((ok, no) => {
+  const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = no; r.readAsDataURL(f);
+});
+
+/* Keep only b, i, u and line breaks from pasted or typed HTML. */
+function clean(node, out){
+  node.childNodes.forEach(n => {
+    if (n.nodeType === 3) out.append(n.textContent);
+    else if (n.nodeType === 1) {
+      const t = n.tagName.toLowerCase();
+      if (["b","strong","i","em","u"].includes(t)) {
+        const e = document.createElement({strong:"b",em:"i"}[t] || t);
+        clean(n, e); out.append(e);
+      } else if (t === "br") out.append(document.createElement("br"));
+      else { if (t === "div" || t === "p") out.append(document.createElement("br")); clean(n, out); }
+    }
+  });
+  return out;
+}
+
+/* views */
+function route(){
+  const v = location.hash === "#download" ? "download" : "upload";
+  $("v-upload").hidden = v !== "upload";
+  $("v-download").hidden = v !== "download";
+  ["upload","download"].forEach(k => {
+    const a = $("n-" + k);
+    v === k ? a.setAttribute("aria-current","page") : a.removeAttribute("aria-current");
+  });
+}
+addEventListener("hashchange", route); route();
+
+/* upload */
+document.querySelectorAll("[name=kind]").forEach(r => r.addEventListener("change", () => {
+  const f = document.querySelector("[name=kind]:checked").value === "file";
+  $("p-text").hidden = f; $("p-file").hidden = !f;
+}));
+document.querySelectorAll("[data-cmd]").forEach(b => {
+  b.addEventListener("mousedown", e => e.preventDefault());
+  b.addEventListener("click", () => document.execCommand(b.dataset.cmd));
+});
+$("share").addEventListener("click", async () => {
+  const msg = $("u-msg"), btn = $("share");
+  const opens = Math.max(1, Math.min(100, parseInt($("opens").value, 10) || 1));
+  const isFile = document.querySelector("[name=kind]:checked").value === "file";
+  try {
+    let item, pieces = [];
+    if (isFile) {
+      const f = $("f").files[0];
+      if (!f) { msg.textContent = "Choose a file first."; return; }
+      if (f.size > MAX_FILE) { msg.textContent = "File too large (limit 9 MB)."; return; }
+      const data = await readFile(f);
+      for (let i = 0; i < data.length; i += CHUNK) pieces.push(data.slice(i, i + CHUNK));
+      item = { type: "file", name: f.name, size: f.size, chunks: pieces.length, opens };
+    } else {
+      if (!$("ed").textContent.trim()) { msg.textContent = "Enter some text first."; return; }
+      item = { type: "text", html: clean($("ed"), document.createElement("div")).innerHTML, opens };
+    }
+    btn.disabled = true;
+    msg.textContent = "Saving...";
+    const c = await put(item, pieces, (i, n) => { msg.textContent = "Saving... " + i + "/" + n; });
+    msg.replaceChildren("Share code (" + opens + (opens === 1 ? " open" : " opens") + "):");
+    const d = document.createElement("div"); d.className = "code"; d.textContent = c;
+    msg.append(d);
+  } catch (e) {
+    msg.textContent = "Could not save: " + (e.code || e.message) + (e.code === "permission-denied" ? " (check Firestore rules)" : "");
+  } finally { btn.disabled = false; }
+});
+
+/* download */
+async function fetchCode(){
+  const code = $("code").value.trim().toUpperCase();
+  const msg = $("d-msg"), box = $("result"), body = $("r-body"), link = $("r-file");
+  box.hidden = true; link.hidden = true; body.replaceChildren();
+  if (!code) { msg.textContent = "Enter a code."; return; }
+  try {
+    msg.textContent = "Looking up...";
+    const it = await take(code);
+    if (!it) { msg.textContent = "Code not found or already used up."; return; }
+    if (it.type === "text") {
+      body.append(...new DOMParser().parseFromString("<body>" + it.html + "</body>", "text/html").body.childNodes);
+    } else {
+      msg.textContent = "Downloading...";
+      const snaps = await Promise.all(Array.from({ length: it.chunks }, (_, i) => getDoc(chunkRef(code, i))));
+      if (snaps.some(s => !s.exists())) throw new Error("file is incomplete");
+      const blob = await (await fetch(snaps.map(s => s.data().d).join(""))).blob();
+      body.textContent = it.name + " (" + Math.ceil(it.size / 1024) + " KB)";
+      link.href = URL.createObjectURL(blob); link.download = it.name; link.hidden = false;
+      if (it.opens <= 1) snaps.forEach((_, i) => deleteDoc(chunkRef(code, i)).catch(() => {}));
+    }
+    msg.textContent = "";
+    box.hidden = false;
+  } catch (e) { msg.textContent = "Could not retrieve: " + (e.code || e.message); }
+}
+$("ok").addEventListener("click", fetchCode);
+$("code").addEventListener("keydown", e => { if (e.key === "Enter") fetchCode(); });
+</script>
+</body>
+</html>

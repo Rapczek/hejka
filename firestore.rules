@@ -1,0 +1,43 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /shares/{code} {
+      // anyone can fetch one share if they know its code, nobody can list them
+      allow get: if true;
+      allow list: if false;
+
+      allow create: if request.resource.data.keys().hasOnly(['type','html','name','size','chunks','opens','createdAt'])
+        && request.resource.data.type in ['text','file']
+        && request.resource.data.opens is int
+        && request.resource.data.opens >= 1
+        && request.resource.data.opens <= 100
+        && (!('html' in request.resource.data) || request.resource.data.html.size() < 100000)
+        && (!('chunks' in request.resource.data)
+            || (request.resource.data.chunks is int
+                && request.resource.data.chunks >= 1
+                && request.resource.data.chunks <= 20));
+
+      // only allowed change: opens goes down by exactly one
+      allow update: if request.resource.data.diff(resource.data).affectedKeys().hasOnly(['opens'])
+        && request.resource.data.opens == resource.data.opens - 1
+        && request.resource.data.opens >= 1;
+
+      // only the last open may delete
+      allow delete: if resource.data.opens <= 1;
+
+      // pieces of a file
+      match /chunks/{i} {
+        allow get: if true;
+        allow list: if false;
+        allow create: if exists(/databases/$(database)/documents/shares/$(code))
+          && i.matches('^[0-9]+$') && int(i) < 20
+          && request.resource.data.keys().hasOnly(['d'])
+          && request.resource.data.d is string
+          && request.resource.data.d.size() <= 700000;
+        allow update: if false;
+        // pieces can be removed once the share itself is gone
+        allow delete: if !exists(/databases/$(database)/documents/shares/$(code));
+      }
+    }
+  }
+}
